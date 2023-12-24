@@ -1,0 +1,76 @@
+name: Build convco for rhel 8
+
+on: 
+  workflow_dispatch:
+  schedule:
+    - cron: "0 0 * * 1"
+
+jobs:
+  build_binary:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout convco repo
+        uses: actions/checkout@v2
+        with:
+          repository: convco/convco
+          path: ./convco
+      
+      # This below shell script is taken from 
+      # https://raw.githubusercontent.com/ltfschoen/kobold-test/master/set_cargo_package_version.sh
+      - name: Get Version
+        id: version
+        run: |
+          LINE_START=$(grep -n -m 1 "\[package\]" Cargo.toml | cut -f1 -d:)
+          LINE_VERSION=$(awk "NR >= $LINE_START && /version/{print NR}" Cargo.toml | head -1)
+          LINE_VERSION_CONTENTS=$(awk "NR==$LINE_VERSION{ print; exit }" Cargo.toml)
+          CARGO_PACKAGE_VERSION=$(echo "$LINE_VERSION_CONTENTS" | sed 's/version//;s/=//;s/\"//g' | xargs)
+          echo "CARGO_PACKAGE_VERSION=v$CARGO_PACKAGE_VERSION" >> "$GITHUB_ENV"
+          echo "RELEASE_NAME=Release - v$CARGO_PACKAGE_VERSION" >> "$GITHUB_ENV"
+          echo "RELEASE_NOTES=Release notes for v$CARGO_PACKAGE_VERSION" >> "$GITHUB_ENV"
+
+        working-directory: ./convco
+
+      - name: print env vars
+        run: | 
+          echo "$CARGO_PACKAGE_VERSION"
+          echo "$RELEASE_NAME"
+          echo "$RELEASE_NOTES"
+
+      - name: Get Current Release
+        id: get_current_release
+        uses: joutvhu/get-release@v1
+        with:
+          tag_name: ${{ env.CARGO_PACKAGE_VERSION }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Build atifact
+        if: steps.get_current_release.outputs.id == ''
+        run: docker run --rm -v ./convco:/app -w /app adityabhamidi/ubi8convco:v0.0.1 cargo build --release
+      
+      - name: zip artifact
+        if: steps.get_current_release.outputs.id == ''
+        run: zip -j convco.zip ./convco/target/release/convco
+      
+      - name: Create Release
+        if: steps.get_current_release.outputs.id == ''
+        id: create_release
+        uses: actions/create-release@v1
+        with:
+          tag_name: ${{ env.CARGO_PACKAGE_VERSION }}
+          release_name: ${{ env.RELEASE_NAME }}
+          body: |
+            ${{ env.RELEASE_NOTES }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Upload Artifact
+        if: steps.get_current_release.outputs.id == ''
+        uses: actions/upload-release-asset@v1
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./convco.zip
+          asset_name: convco
+          asset_content_type: application/zip
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
